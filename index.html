@@ -55,6 +55,8 @@ th:first-child,td:first-child{text-align:left}
 .ov{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:flex-end;justify-content:center;z-index:20}
 .sheet{background:var(--card);width:100%;max-width:560px;max-height:92vh;overflow:auto;padding:16px 16px calc(16px + env(safe-area-inset-bottom));border-radius:16px 16px 0 0}
 .sheet video,.sheet img{width:100%;border-radius:10px;background:#000;display:block;margin:6px 0}
+.sheet video.mir{transform:scaleX(-1)}
+.pend{border-left:3px solid var(--wn)}
 #toast{position:fixed;left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom));padding:12px 14px;border-radius:10px;background:var(--tx);color:var(--bg);display:none;z-index:30}
 #toast.show{display:block}
 #toast.err{background:var(--er);color:#fff}
@@ -111,21 +113,72 @@ function errText(e) {
   return (e && e.message) || "Xatolik yuz berdi";
 }
 const topbar = () => `<header class="top"><b>${esc(me.full_name)}</b><button class="lnk" onclick="logout()">Chiqish</button></header>`;
-async function logout() { clearInterval(clockTimer); await sb.auth.signOut(); me = null; loginView(); }
+async function logout() {
+  const pend = me && !me.is_admin ? (await qAll().catch(() => [])).filter(x => x.uid === me.user_id).length : 0;
+  if (pend && !confirm("Yuborilmagan yozuvlar bor. Chiqsangiz, ular shu akkauntga qayta kirganingizda yuboriladi. Chiqasizmi?")) return;
+  clearInterval(clockTimer);
+  try { await sb.auth.signOut(); } catch (e) {}
+  LS.del("dv_cache"); LS.del("dv_rec");
+  me = null; loginView();
+}
 
 /* ---------- start / login ---------- */
+const LS = {
+  get: k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  del: k => { try { localStorage.removeItem(k); } catch (e) {} }
+};
+const isNet = e => !navigator.onLine || e instanceof TypeError || (e && !e.code && /fetch|network|load failed|timeout/i.test(e.message || ""));
+const idb = () => new Promise((res, rej) => {
+  const r = indexedDB.open("davomat", 1);
+  r.onupgradeneeded = () => r.result.createObjectStore("q", {keyPath: "id", autoIncrement: true});
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+const tx = async (mode, fn) => {
+  const db = await idb();
+  return new Promise((res, rej) => {
+    const t = db.transaction("q", mode);
+    const rq = fn(t.objectStore("q"));
+    t.oncomplete = () => res(rq && rq.result);
+    t.onerror = () => rej(t.error);
+  });
+};
+const qAll = () => tx("readonly", st => st.getAll());
+const qPut = o => tx("readwrite", st => st.put(o));
+const qDel = id => tx("readwrite", st => st.delete(id));
+
 async function boot() {
-  const {data: {session}} = await sb.auth.getSession();
+  let session = null, netFail = false;
+  try {
+    const r = await sb.auth.getSession();
+    session = r.data.session;
+    if (r.error && isNet(r.error)) netFail = true;
+  } catch (e) { netFail = true; }
+  const cache = LS.get("dv_cache");
+  if (!session && cache && !cache.me.is_admin && (netFail || !navigator.onLine)) {
+    me = cache.me; settings = cache.settings;
+    return empView();
+  }
   if (!session) return loginView();
   const {data, error} = await sb.from("employees").select("*").eq("user_id", session.user.id).maybeSingle();
+  if (error && isNet(error) && cache && cache.me.user_id === session.user.id && !cache.me.is_admin) {
+    me = cache.me; settings = cache.settings;
+    return empView();
+  }
   if (error || !data || !data.active) {
     app.innerHTML = `<main><p class="err">Bu akkaunt hodim sifatida topilmadi yoki faol emas. Admin bilan bog'laning.</p><button class="btn" onclick="logout()">Chiqish</button></main>`;
     return;
   }
   me = data;
-  const {data: s} = await sb.from("settings").select("*").eq("id", 1).single();
-  settings = s;
-  me.is_admin ? adminView() : empView();
+  const {data: st} = await sb.from("settings").select("*").eq("id", 1).single();
+  settings = st || (cache && cache.settings);
+  if (me.is_admin) return adminView();
+  LS.set("dv_cache", {me, settings});
+  let r = null;
+  try { r = await flush(); } catch (e) {}
+  await empView();
+  if (r && r.errors.length) toast(r.errors.join(". "), 1);
 }
 function loginView() {
   app.innerHTML = `<main class="login"><h1>Davomat</h1><p class="mu">Login va PIN-kodingizni kiriting.</p>
@@ -154,15 +207,29 @@ function tick() { const e = document.getElementById("clk"); if (e) e.textContent
 
 async function empView() {
   const t = tzNow();
-  const {data: rec} = await sb.from("attendance").select("*").eq("employee_id", me.id).eq("work_date", t.date).maybeSingle();
-  const st = !rec ? "in" : (!rec.check_out ? "out" : "done");
+  let rec = null, offline = false;
+  try {
+    const r = await sb.from("attendance").select("*").eq("employee_id", me.id).eq("work_date", t.date).maybeSingle();
+    if (r.error) throw r.error;
+    rec = r.data; LS.set("dv_rec", {date: t.date, rec});
+  } catch (e) {
+    offline = true;
+    const c = LS.get("dv_rec"); rec = c && c.date === t.date ? c.rec : null;
+  }
+  const q = (await qAll().catch(() => [])).filter(x => x.uid === me.user_id);
+  const hasIn = rec || q.some(x => x.kind === "in" && x.day === t.date);
+  const hasOut = (rec && rec.check_out) || q.some(x => x.kind === "out" && x.day === t.date);
+  const st = !hasIn ? "in" : (!hasOut ? "out" : "done");
   app.innerHTML = `${topbar()}<main class="emp"><div class="clock" id="clk"></div>
   <div class="mu">Sizning jadvalingiz: ${hm(me.work_start)} – ${hm(me.work_end)}</div>
+  ${offline ? '<div class="mu">Internet yo\'q: oflayn rejim</div>' : ""}
   <div id="msg" class="msg"></div>
   <button class="big" ${st !== "in" ? "disabled" : ""} onclick="act('in')">Keldim</button>
   <button class="big out" ${st !== "out" ? "disabled" : ""} onclick="act('out')">Ketdim</button>
-  ${rec ? recCard(rec) : ""}</main>`;
+  ${q.length ? `<div class="card pend"><b>Yuborilmagan: ${q.length} ta</b><div class="mu">${q.map(x => (x.kind === "in" ? "Keldim " : "Ketdim ") + fmtT(x.time)).join(", ")}. Internet paydo bo'lganda avtomatik yuboriladi.</div></div>` : ""}
+  ${rec ? recCard(rec) : ""}<div id="pay"></div></main>`;
   tick(); clearInterval(clockTimer); clockTimer = setInterval(tick, 1000);
+  loadPay();
 }
 const getPos = () => new Promise((res, rej) => navigator.geolocation
   ? navigator.geolocation.getCurrentPosition(res, rej, {enableHighAccuracy: true, timeout: 20000, maximumAge: 0})
@@ -170,7 +237,7 @@ const getPos = () => new Promise((res, rej) => navigator.geolocation
 async function selfie() {
   const stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user", width: {ideal: 960}}, audio: false});
   return new Promise(res => {
-    const m = modal(`<video id="vd" autoplay playsinline muted></video><div class="two"><button class="btn" id="cx">Bekor qilish</button><button class="btn pri" id="sn">Suratga olish</button></div>`);
+    const m = modal(`<video id="vd" class="mir" autoplay playsinline muted></video><div class="two"><button class="btn" id="cx">Bekor qilish</button><button class="btn pri" id="sn">Suratga olish</button></div>`);
     const v = m.el.querySelector("#vd"); v.srcObject = stream;
     const stop = () => { stream.getTracks().forEach(t => t.stop()); m.close(); };
     m.el.querySelector("#cx").onclick = () => { stop(); res(null); };
@@ -190,7 +257,50 @@ const askReason = late => new Promise(res => {
   m.el.querySelector("#b1").onclick = () => { m.close(); res(undefined); };
   m.el.querySelector("#b2").onclick = () => { const v = m.el.querySelector("#rs").value.trim(); m.close(); res(v); };
 });
+let busy = false, fp = null;
+function flush() { return fp || (fp = flushRun().finally(() => { fp = null; })); }
+async function flushRun() {
+  const out = {sent: 0, errors: [], net: false};
+  let items = [];
+  try { items = (await qAll()).filter(x => me && x.uid === me.user_id); } catch (e) { return out; }
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    try {
+      if (!it.up) {
+        const up = await sb.storage.from("photos").upload(it.path, it.blob, {contentType: "image/jpeg"});
+        if (up.error && !/already exists|duplicate/i.test(up.error.message || "")) throw up.error;
+        it.up = true; await qPut(it);
+      }
+      const args = {p_lat: it.lat, p_lng: it.lng, p_photo: it.path, p_time: it.offline ? it.time : null};
+      const r = it.kind === "in"
+        ? await sb.rpc("check_in", {...args, p_reason: it.reason || null})
+        : await sb.rpc("check_out", args);
+      if (r.error) throw r.error;
+      await qDel(it.id); out.sent++;
+    } catch (e) {
+      if (isNet(e)) {
+        out.net = true;
+        for (const x of items.slice(i)) { x.offline = true; await qPut(x).catch(() => {}); }
+        break;
+      }
+      out.errors.push(e.message || "Xatolik");
+      await qDel(it.id).catch(() => {});
+    }
+  }
+  return out;
+}
+async function bgSync() {
+  if (!me || me.is_admin || busy) return;
+  let has = false;
+  try { has = (await qAll()).some(x => x.uid === me.user_id); } catch (e) { return; }
+  if (!has) return;
+  const r = await flush();
+  if (!r.sent && !r.errors.length) return;
+  toast(r.errors.length ? r.errors.join(". ") : "Yuborilmagan yozuvlar serverga yuborildi", !!r.errors.length);
+  if (document.getElementById("clk") && !document.querySelector(".ov") && !busy) empView();
+}
 async function act(kind) {
+  busy = true;
   document.querySelectorAll(".big").forEach(b => b.disabled = true);
   let note = ["", false];
   try {
@@ -207,33 +317,216 @@ async function act(kind) {
     msg("Kamera ochilmoqda...");
     const blob = await selfie();
     if (!blob) return;
-    msg("Yuklanmoqda...");
-    const path = `${me.user_id}/${tzNow().date}-${kind}-${Date.now()}.jpg`;
-    const up = await sb.storage.from("photos").upload(path, blob, {contentType: "image/jpeg"});
-    if (up.error) throw up.error;
-    const r = kind === "in"
-      ? await sb.rpc("check_in", {p_lat: la, p_lng: lo, p_photo: path, p_reason: reason || null})
-      : await sb.rpc("check_out", {p_lat: la, p_lng: lo, p_photo: path});
-    if (r.error) throw r.error;
-    note = [kind === "in" ? "Kelish vaqti yozildi" : "Ketish vaqti yozildi", false];
+    msg("Saqlanmoqda...");
+    const day = tzNow().date;
+    const id = await qPut({kind, day, uid: me.user_id, lat: la, lng: lo, reason: reason || null, time: new Date().toISOString(),
+      path: `${me.user_id}/${day}-${kind}-${Date.now()}.jpg`, blob, up: false, offline: false});
+    msg("Yuborilmoqda...");
+    let r = await flush();
+    if (!r.net && (await qAll()).some(x => x.id === id)) r = await flush();
+    const left = (await qAll()).some(x => x.id === id);
+    if (r.errors.length) note = [r.errors.join(". "), true];
+    else if (left) note = ["Internet yo'q. Yozuv telefonga saqlandi, internet paydo bo'lganda avtomatik yuboriladi.", false];
+    else note = [kind === "in" ? "Kelish vaqti yozildi" : "Ketish vaqti yozildi", false];
   } catch (e) { note = [errText(e), true]; }
-  finally { await empView(); msg(note[0], note[1]); }
+  finally { busy = false; await empView(); msg(note[0], note[1]); }
 }
 
-/* ---------- admin ---------- */
+/* ---------- maosh / KPI / dam kunlari ---------- */
+let payMonth = null;
+const WD = ["Du", "Se", "Chor", "Pay", "Ju", "Sha", "Yak"];
+const wdBox = sel => `<div class="mu" style="margin-top:10px;font-size:.92rem">Ish kunlari</div><div id="f_wd" class="chk" style="flex-wrap:wrap;gap:6px 14px;margin:6px 0 10px">${WD.map((n, i) => `<label class="chk" style="margin:0"><input type="checkbox" data-d="${i + 1}" ${sel.includes(i + 1) ? "checked" : ""}> ${n}</label>`).join("")}</div>`;
+const kpiToText = t => (t || []).map(x => `${x.pct}=${x.bonus}`).join("\n");
+function mRange(m) {
+  const [y, mo] = m.split("-").map(Number);
+  return {from: `${m}-01`, nx: mo === 12 ? `${y + 1}-01-01` : `${y}-${String(mo + 1).padStart(2, "0")}-01`};
+}
+function monthDays(m) {
+  const [y, mo] = m.split("-").map(Number);
+  const n = new Date(Date.UTC(y, mo, 0)).getUTCDate(), out = [];
+  for (let d = 1; d <= n; d++) {
+    const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+    out.push({ds: `${m}-${String(d).padStart(2, "0")}`, wd: wd === 0 ? 7 : wd});
+  }
+  return out;
+}
+function absence(e, m, att, off) {
+  const today = tzNow().date;
+  const wdays = e.work_days && e.work_days.length ? e.work_days : [1, 2, 3, 4, 5, 6];
+  const start = e.start_date || "0000-00-00";
+  const sched = monthDays(m).filter(x => wdays.includes(x.wd) && x.ds >= start);
+  const a = new Set(att), o = new Set(off);
+  const missed = sched.filter(x => x.ds < today && !a.has(x.ds) && !o.has(x.ds)).map(x => x.ds);
+  const daily = sched.length ? Number(e.base_salary || 0) / sched.length : 0;
+  return {missed, daily, amt: Math.round(daily * missed.length)};
+}
+function calcPay(e, m, fines, adv, ab) {
+  const plan = m ? Number(m.plan) : Number(e.sales_plan || 0);
+  const sales = m ? Number(m.sales) : 0;
+  const pct = plan > 0 ? sales / plan * 100 : 0;
+  const tier = [...(e.kpi_tiers || [])].sort((a, b) => b.pct - a.pct).find(t => pct >= t.pct);
+  const bonus = tier ? Number(tier.bonus) : 0;
+  const fixed = Number(e.base_salary || 0);
+  return {fixed, plan, sales, pct, bonus, fines, adv, missed: ab.missed.length, absAmt: ab.amt, daily: ab.daily,
+    net: fixed + bonus - fines - adv - ab.amt};
+}
+const payRows = c => `<div class="row"><span>Fiksa maosh</span><b>${money(c.fixed)}</b></div>
+<div class="mu">1 kunlik: ${money(Math.round(c.daily))}</div>
+<div class="row"><span>KPI bajarilishi</span><b>${c.plan > 0 ? c.pct.toFixed(1) + "%" : "plan yo'q"}</b></div>
+<div class="row"><span>KPI bonus</span><b>+ ${money(c.bonus)}</b></div>
+<div class="row"><span>Kelmagan kunlar (${c.missed} kun)</span><b>− ${money(c.absAmt)}</b></div>
+<div class="row"><span>Shtraf</span><b>− ${money(c.fines)}</b></div>
+<div class="row"><span>Avans</span><b>− ${money(c.adv)}</b></div>
+<div class="row"><b>Qo'lga tegadi</b><b class="${c.net < 0 ? "err" : ""}">${money(c.net)}</b></div>`;
+
+async function loadPay() {
+  const box = document.getElementById("pay");
+  if (!box || !me) return;
+  if (!payMonth) payMonth = tzNow().date.slice(0, 7);
+  const {from, nx} = mRange(payMonth);
+  try {
+    const [a, m, v, em, o] = await Promise.all([
+      sb.from("attendance").select("work_date,fine_amount,fine_waived").eq("employee_id", me.id).gte("work_date", from).lt("work_date", nx),
+      sb.from("monthly").select("*").eq("employee_id", me.id).eq("month", payMonth).maybeSingle(),
+      sb.from("advances").select("amount").eq("employee_id", me.id).gte("paid_on", from).lt("paid_on", nx),
+      sb.from("employees").select("*").eq("id", me.id).single(),
+      sb.from("days_off").select("*").eq("employee_id", me.id).gte("day", from).lt("day", nx).order("day")]);
+    const er = a.error || m.error || v.error || em.error || o.error;
+    if (er) throw er;
+    const e = em.data;
+    const fines = a.data.filter(r => !r.fine_waived).reduce((x, r) => x + r.fine_amount, 0);
+    const adv = v.data.reduce((x, r) => x + Number(r.amount), 0);
+    const ab = absence(e, payMonth, a.data.map(r => r.work_date), o.data.map(r => r.day));
+    const c = calcPay(e, m.data, fines, adv, ab);
+    const tiers = (e.kpi_tiers || []).slice().sort((x, y) => x.pct - y.pct).map(t => `${t.pct}% — ${money(t.bonus)}`).join("; ");
+    const used = o.data.filter(r => !r.by_admin).length, today = tzNow().date;
+    box.innerHTML = `<div class="card"><h2>Oylik hisobim</h2>
+    <label>Oy<input type="month" id="pm" value="${payMonth}"></label>
+    <div class="row"><span>Savdo / plan</span><b>${money(c.sales)} / ${money(c.plan)}</b></div>${payRows(c)}
+    ${ab.missed.length ? `<div class="mu" style="margin-top:6px">Kelmagan kunlar: ${ab.missed.map(d => d.slice(8)).join(", ")}</div>` : ""}
+    ${tiers ? `<div class="mu" style="margin-top:6px">KPI bosqichlari: ${tiers}</div>` : ""}</div>
+    <div class="card"><h2>Dam kunlarim</h2><div class="mu">Siz belgilagan: ${used} / 2 (oyiga). Dam kuniga ham maosh to'lanadi.</div>
+    ${o.data.map(r => `<div class="row"><span>${r.day}${r.by_admin ? ' <span class="tag">admin</span>' : ""}</span>${!r.by_admin && r.day >= today ? `<button class="lnk" onclick="cancelOff('${r.day}')">bekor qilish</button>` : ""}</div>`).join("") || '<div class="mu">Hali belgilanmagan</div>'}
+    <label>Yangi dam kuni<input type="date" id="od" value="${today}" min="${today}"></label>
+    <button class="btn sm pri" onclick="markOff()">Dam kuni belgilash</button></div>`;
+    document.getElementById("pm").onchange = ev => { payMonth = ev.target.value || payMonth; loadPay(); };
+  } catch (e) { box.innerHTML = ""; }
+}
+async function markOff() {
+  const d = document.getElementById("od").value;
+  if (!d) return toast("Sanani tanlang", 1);
+  const {error} = await sb.rpc("mark_dayoff", {p_day: d});
+  if (error) return toast(error.message, 1);
+  payMonth = d.slice(0, 7); toast("Dam kuni belgilandi"); loadPay();
+}
+async function cancelOff(d) {
+  const {error} = await sb.rpc("cancel_dayoff", {p_day: d});
+  if (error) return toast(error.message, 1);
+  toast("Bekor qilindi"); loadPay();
+}
+async function tabPay() {
+  const {from, nx} = mRange(repMonth);
+  pane().innerHTML = `<label>Oy<input type="month" id="pmm" value="${repMonth}"></label><div id="pp"><p class="mu">Yuklanmoqda...</p></div>`;
+  document.getElementById("pmm").onchange = e => { repMonth = e.target.value || repMonth; tabPay(); };
+  const [a, b, m, v, o] = await Promise.all([
+    sb.from("employees").select("*").eq("active", true).eq("is_admin", false).order("full_name"),
+    sb.from("attendance").select("employee_id,work_date,fine_amount,fine_waived").gte("work_date", from).lt("work_date", nx),
+    sb.from("monthly").select("*").eq("month", repMonth),
+    sb.from("advances").select("*").gte("paid_on", from).lt("paid_on", nx).order("paid_on"),
+    sb.from("days_off").select("*").gte("day", from).lt("day", nx).order("day")]);
+  const pp = document.getElementById("pp");
+  const er = a.error || b.error || m.error || v.error || o.error;
+  if (er) return pp.innerHTML = `<p class="err">${esc(er.message)}</p>`;
+  if (!a.data.length) return pp.innerHTML = '<p class="mu">Hodimlar yo\'q.</p>';
+  let total = 0;
+  const cards = a.data.map(e => {
+    const att = b.data.filter(r => r.employee_id === e.id);
+    const fines = att.filter(r => !r.fine_waived).reduce((x, r) => x + r.fine_amount, 0);
+    const advs = v.data.filter(r => r.employee_id === e.id);
+    const adv = advs.reduce((x, r) => x + Number(r.amount), 0);
+    const offs = o.data.filter(r => r.employee_id === e.id);
+    const ab = absence(e, repMonth, att.map(r => r.work_date), offs.map(r => r.day));
+    const c = calcPay(e, m.data.find(r => r.employee_id === e.id), fines, adv, ab);
+    total += c.net;
+    return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><b class="${c.net < 0 ? "err" : ""}">${money(c.net)}</b></div>
+    <div class="two"><label>Plan (so'm)<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
+    <label>Savdo (so'm)<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
+    <button class="btn sm" onclick="savePay('${e.id}')">Plan va savdoni saqlash</button>
+    ${payRows(c)}
+    <details><summary class="mu">Kelmagan kunlar (${ab.missed.length})</summary>${ab.missed.map(d => `<div class="row"><span>${d}</span><button class="lnk" onclick="adminOff('${e.id}','${d}')">dam qilish</button></div>`).join("")}</details>
+    <details><summary class="mu">Dam kunlari (${offs.length})</summary>${offs.map(r => `<div class="row"><span>${r.day}, ${r.by_admin ? "admin" : "hodim"}</span><button class="lnk" onclick="delOff('${r.id}')">o'chirish</button></div>`).join("")}</details>
+    <details><summary class="mu">Avanslar (${advs.length})</summary>${advs.map(r => `<div class="row"><span>${r.paid_on}${r.note ? ", " + esc(r.note) : ""}</span><span>${money(r.amount)} <button class="lnk" onclick="delAdv('${r.id}')">o'chirish</button></span></div>`).join("")}</details>
+    <div class="two"><button class="btn sm" onclick="addAdv('${e.id}')">Avans qo'shish</button><button class="btn sm" onclick="addOff('${e.id}')">Dam kuni qo'shish</button></div></div>`;
+  }).join("");
+  pp.innerHTML = cards + `<div class="card"><div class="row"><b>Jami to'lanadi</b><b>${money(total)}</b></div></div>`;
+}
+async function savePay(id) {
+  const plan = Math.round(+document.getElementById("pl_" + id).value || 0);
+  const sales = Math.round(+document.getElementById("sl_" + id).value || 0);
+  const {error} = await sb.from("monthly").upsert({employee_id: id, month: repMonth, plan, sales}, {onConflict: "employee_id,month"});
+  if (error) return toast(error.message, 1);
+  toast("Saqlandi"); tabPay();
+}
+async function adminOff(id, day) {
+  const {error} = await sb.from("days_off").insert({employee_id: id, day, by_admin: true});
+  if (error) return toast(/duplicate|unique/i.test(error.message) ? "Bu kun allaqachon dam kuni" : error.message, 1);
+  toast("Dam kuni belgilandi"); tabPay();
+}
+function addOff(id) {
+  const m = modal(`<h3>Dam kuni qo'shish</h3>
+  <label>Sana<input type="date" id="o_d" value="${tzNow().date}"></label>
+  <div class="two"><button class="btn" id="o_c">Bekor qilish</button><button class="btn pri" id="o_k">Saqlash</button></div>`);
+  m.el.querySelector("#o_c").onclick = m.close;
+  m.el.querySelector("#o_k").onclick = async () => {
+    const d = m.el.querySelector("#o_d").value;
+    if (!d) return;
+    m.close(); await adminOff(id, d);
+  };
+}
+async function delOff(id) {
+  if (!confirm("Bu dam kunini o'chirasizmi?")) return;
+  const {error} = await sb.from("days_off").delete().eq("id", id);
+  if (error) return toast(error.message, 1);
+  tabPay();
+}
+function addAdv(id) {
+  const m = modal(`<h3>Avans qo'shish</h3>
+  <label>Summa (so'm)<input type="number" id="a_s" inputmode="numeric"></label>
+  <label>Sana<input type="date" id="a_d" value="${tzNow().date}"></label>
+  <label>Izoh (ixtiyoriy)<input id="a_n"></label>
+  <div class="two"><button class="btn" id="a_c">Bekor qilish</button><button class="btn pri" id="a_k">Saqlash</button></div><p class="err" id="a_e"></p>`);
+  const q = x => m.el.querySelector(x);
+  q("#a_c").onclick = m.close;
+  q("#a_k").onclick = async () => {
+    const amount = Math.round(+q("#a_s").value || 0);
+    if (amount <= 0) { q("#a_e").textContent = "Summani kiriting"; return; }
+    const {error} = await sb.from("advances").insert({employee_id: id, amount, paid_on: q("#a_d").value, note: q("#a_n").value.trim() || null});
+    if (error) { q("#a_e").textContent = error.message; return; }
+    m.close(); toast("Avans qo'shildi"); tabPay();
+  };
+}
+async function delAdv(id) {
+  if (!confirm("Bu avansni o'chirasizmi?")) return;
+  const {error} = await sb.from("advances").delete().eq("id", id);
+  if (error) return toast(error.message, 1);
+  tabPay();
+}
+
+/* ---------- admin ---------- *//* ---------- admin ---------- */
 const pane = () => document.getElementById("pane");
 const setTab = k => { tab = k; adminView(); };
 async function adminView() {
   if (!repMonth) repMonth = tzNow().date.slice(0, 7);
-  app.innerHTML = `${topbar()}<nav class="tabs">${[["today","Bugun"],["report","Hisobot"],["staff","Hodimlar"],["set","Ofis"]]
+  app.innerHTML = `${topbar()}<nav class="tabs">${[["today","Bugun"],["report","Hisobot"],["pay","Maosh"],["staff","Hodimlar"],["set","Ofis"]]
     .map(([k, n]) => `<button class="${tab === k ? "on" : ""}" onclick="setTab('${k}')">${n}</button>`).join("")}</nav><main id="pane"></main>`;
-  await ({today: tabToday, report: tabReport, staff: tabStaff, set: tabSet})[tab]();
+  await ({today: tabToday, report: tabReport, pay: tabPay, staff: tabStaff, set: tabSet})[tab]();
 }
 function recAdmin(r) {
   RC[r.id] = r;
   const late = r.late_minutes > 0;
   return `<div class="row"><span>Keldi</span><b>${fmtT(r.check_in)}</b></div>
   <div class="row"><span>Ketdi</span><b>${fmtT(r.check_out)}</b></div>
+  ${r.is_offline ? `<div class="mu">Oflayn yozilgan, serverga ${new Date(r.synced_at).toLocaleString("en-GB", {timeZone: "Asia/Tashkent"})} da yuborilgan</div>` : ""}
   ${late ? `<div class="row warn"><span>Kechikish</span><b>${r.late_minutes} daqiqa</b></div>
   <div class="row"><span>Shtraf</span><span><b class="${r.fine_waived ? "strike" : ""}">${money(r.fine_amount)}</b> ${r.fine_waived ? '<span class="tag">ozod</span>' : ""}</span></div>
   ${r.late_reason ? `<div class="reason">Sabab: ${esc(r.late_reason)}</div>` : '<div class="mu">Sabab yozilmagan</div>'}` : ""}
@@ -308,7 +601,7 @@ async function tabStaff() {
     <div class="mu">${hm(e.work_start)}–${hm(e.work_end)}, ${fineLabel(e)}</div></div>`).join("");
 }
 function editEmp(id) {
-  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], active: true};
+  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], base_salary: 0, sales_plan: 0, kpi_tiers: [], work_days: [1, 2, 3, 4, 5, 6], start_date: null, active: true};
   const opt = (v, n) => `<option value="${v}" ${e.fine_mode === v ? "selected" : ""}>${n}</option>`;
   const m = modal(`<h3>${id ? "Hodimni tahrirlash" : "Yangi hodim"}</h3>
   <label>Ism-familiya<input id="f_n" value="${esc(e.full_name)}"></label>
@@ -319,6 +612,11 @@ function editEmp(id) {
   <label>Daqiqasiga shtraf (so'm)<input type="number" id="f_a" inputmode="numeric" value="${e.per_minute_amount}"></label>
   <label>Imtiyozli vaqt (daqiqa)<input type="number" id="f_g" inputmode="numeric" value="${e.grace_minutes}"></label>
   <label>Bosqichlar (har qatorda: dan-gacha=summa)<textarea id="f_t" rows="4" placeholder="1-15=10000&#10;16-30=30000&#10;31-999=50000">${esc(tiersToText(e.tiers))}</textarea></label>
+  ${wdBox(e.work_days || [1, 2, 3, 4, 5, 6])}
+  <label>Ishga kirgan sana (ixtiyoriy)<input type="date" id="f_sd" value="${e.start_date || ""}"></label>
+  <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
+  <label>Oylik savdo plani (so'm)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
+  <label>KPI bonus (har qatorda: foiz=bonus summasi)<textarea id="f_k" rows="4" placeholder="80=200000&#10;100=500000&#10;120=1000000">${esc(kpiToText(e.kpi_tiers))}</textarea></label>
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
   <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
   const q = s => m.el.querySelector(s);
@@ -333,8 +631,17 @@ function editEmp(id) {
       if (!k) { fe.textContent = `Bosqich noto'g'ri yozilgan: ${ln}`; return; }
       tiers.push({from: +k[1], to: +k[2], amount: +k[3]});
     }
+    const kpi = [];
+    for (const ln of q("#f_k").value.split("\n").map(x => x.trim()).filter(Boolean)) {
+      const k = ln.match(/^(\d+(?:[.,]\d+)?)\s*%?\s*=\s*(\d+)$/);
+      if (!k) { fe.textContent = `KPI qatori noto'g'ri yozilgan: ${ln}`; return; }
+      kpi.push({pct: parseFloat(k[1].replace(",", ".")), bonus: +k[2]});
+    }
+    const wd = [...q("#f_wd").querySelectorAll("input:checked")].map(x => +x.dataset.d);
+    if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
-      per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers};
+      per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers,
+      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null};
     q("#s").disabled = true;
     if (id) {
       row.active = q("#f_x").checked;
@@ -383,6 +690,9 @@ async function tabSet() {
   };
 }
 
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+window.addEventListener("online", () => bgSync());
+setInterval(() => bgSync(), 30000);
 boot();
 </script>
 </body>
