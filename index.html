@@ -76,6 +76,7 @@ let repMonth = null;
 
 /* ---------- helpers ---------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const usd = n => "$" + Number(n || 0).toLocaleString("ru-RU");
 const money = n => Number(n || 0).toLocaleString("ru-RU") + " so'm";
 const fmtT = iso => iso ? new Date(iso).toLocaleTimeString("en-GB", {timeZone:"Asia/Tashkent", hour:"2-digit", minute:"2-digit"}) : "—";
 const hm = s => String(s).slice(0, 5);
@@ -402,7 +403,7 @@ async function loadPay() {
     const used = o.data.filter(r => !r.by_admin).length, today = tzNow().date;
     box.innerHTML = `<div class="card"><h2>Oylik hisobim</h2>
     <label>Oy<input type="month" id="pm" value="${payMonth}"></label>
-    <div class="row"><span>Savdo / plan</span><b>${money(c.sales)} / ${money(c.plan)}</b></div>${payRows(c)}
+    <div class="row"><span>Savdo / plan</span><b>${usd(c.sales)} / ${usd(c.plan)}</b></div>${payRows(c)}
     ${ab.missed.length ? `<div class="mu" style="margin-top:6px">Kelmagan kunlar: ${ab.missed.map(d => d.slice(8)).join(", ")}</div>` : ""}
     ${tiers ? `<div class="mu" style="margin-top:6px">KPI bosqichlari: ${tiers}</div>` : ""}</div>
     <div class="card"><h2>Dam kunlarim</h2><div class="mu">Siz belgilagan: ${used} / 2 (oyiga). Dam kuniga ham maosh to'lanadi.</div>
@@ -449,8 +450,8 @@ async function tabPay() {
     const c = calcPay(e, m.data.find(r => r.employee_id === e.id), fines, adv, ab);
     total += c.net;
     return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><b class="${c.net < 0 ? "err" : ""}">${money(c.net)}</b></div>
-    <div class="two"><label>Plan (so'm)<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
-    <label>Savdo (so'm)<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
+    <div class="two"><label>Plan ($)<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
+    <label>Savdo ($)<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
     <button class="btn sm" onclick="savePay('${e.id}')">Plan va savdoni saqlash</button>
     ${payRows(c)}
     <details><summary class="mu">Kelmagan kunlar (${ab.missed.length})</summary>${ab.missed.map(d => `<div class="row"><span>${d}</span><button class="lnk" onclick="adminOff('${e.id}','${d}')">dam qilish</button></div>`).join("")}</details>
@@ -615,7 +616,7 @@ function editEmp(id) {
   ${wdBox(e.work_days || [1, 2, 3, 4, 5, 6])}
   <label>Ishga kirgan sana (ixtiyoriy)<input type="date" id="f_sd" value="${e.start_date || ""}"></label>
   <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
-  <label>Oylik savdo plani (so'm)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
+  <label>Oylik savdo plani ($)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
   <label>KPI bonus (har qatorda: foiz=bonus summasi)<textarea id="f_k" rows="4" placeholder="80=200000&#10;100=500000&#10;120=1000000">${esc(kpiToText(e.kpi_tiers))}</textarea></label>
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
   <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
