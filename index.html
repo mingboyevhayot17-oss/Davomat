@@ -474,14 +474,26 @@ async function adminOff(id, day) {
   toast("Dam kuni belgilandi"); tabPay();
 }
 function addOff(id) {
-  const m = modal(`<h3>Dam kuni qo'shish</h3>
-  <label>Sana<input type="date" id="o_d" value="${tzNow().date}"></label>
-  <div class="two"><button class="btn" id="o_c">Bekor qilish</button><button class="btn pri" id="o_k">Saqlash</button></div>`);
-  m.el.querySelector("#o_c").onclick = m.close;
-  m.el.querySelector("#o_k").onclick = async () => {
-    const d = m.el.querySelector("#o_d").value;
-    if (!d) return;
-    m.close(); await adminOff(id, d);
+  const t = tzNow().date;
+  const m = modal(`<h3>Dam kunlarini qo'shish</h3>
+  <div class="two"><label>Dan<input type="date" id="o_d" value="${t}"></label><label>Gacha<input type="date" id="o_e" value="${t}"></label></div>
+  <p class="mu">Bir kun uchun ikkala sanaga bir xil kunni qoldiring. Oraliqdagi barcha kunlar dam kuni bo'ladi.</p>
+  <div class="two"><button class="btn" id="o_c">Bekor qilish</button><button class="btn pri" id="o_k">Saqlash</button></div><p class="err" id="o_x"></p>`);
+  const q = x => m.el.querySelector(x);
+  q("#o_c").onclick = m.close;
+  q("#o_k").onclick = async () => {
+    const d1 = q("#o_d").value, d2 = q("#o_e").value, er = q("#o_x");
+    er.textContent = "";
+    if (!d1 || !d2) { er.textContent = "Sanalarni tanlang"; return; }
+    if (d2 < d1) { er.textContent = "Oxirgi sana boshlanish sanasidan oldin bo'lmasin"; return; }
+    const rows = [];
+    for (let x = Date.parse(d1 + "T00:00:00Z"); x <= Date.parse(d2 + "T00:00:00Z"); x += 864e5)
+      rows.push({employee_id: id, day: new Date(x).toISOString().slice(0, 10), by_admin: true});
+    if (rows.length > 62) { er.textContent = "Bir marta eng ko'pi bilan 62 kun belgilash mumkin"; return; }
+    q("#o_k").disabled = true;
+    const {error} = await sb.from("days_off").upsert(rows, {onConflict: "employee_id,day", ignoreDuplicates: true});
+    if (error) { er.textContent = error.message; q("#o_k").disabled = false; return; }
+    m.close(); toast(`${rows.length} kun dam kuni qilindi`); tabPay();
   };
 }
 async function delOff(id) {
