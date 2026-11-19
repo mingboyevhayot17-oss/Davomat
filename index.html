@@ -359,6 +359,8 @@ function monthDays(m) {
   const [y, mo] = m.split("-").map(Number);
   const n = new Date(Date.UTC(y, mo, 0)).getUTCDate(), out = [];
   for (let d = 1; d <= n; d++) {
+    const cats = [...q("#f_cats").querySelectorAll("input:checked")].map(x => x.dataset.k);
+    if (!cats.length) { fe.textContent = "Kamida bitta yo'nalishni tanlang"; return; }
     const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
     out.push({ds: `${m}-${String(d).padStart(2, "0")}`, wd: wd === 0 ? 7 : wd});
   }
@@ -375,8 +377,9 @@ function absence(e, m, att, off) {
   return {missed, daily, amt: Math.round(daily * missed.length)};
 }
 const CATS = [["acc", "Aksessuar"], ["nb", "Notebook"], ["ph", "Yangi + b/u"]];
+const empCats = e => { const c = (e && e.cats && e.cats.length) ? e.cats : CATS.map(x => x[0]); return CATS.filter(([k]) => c.includes(k)); };
 function calcPay(e, rows, fines, adv, ab) {
-  const cats = CATS.map(([k, name]) => {
+  const cats = empCats(e).map(([k, name]) => {
     const r = (rows || []).find(x => x.cat === k);
     const plan = r ? Number(r.plan) : Number((e.cat_plans || {})[k] || 0);
     const sales = r ? Number(r.sales) : 0;
@@ -504,7 +507,7 @@ async function tabPlan() {
   }).join("");
 }
 async function savePlan(id) {
-  const rows = CATS.map(([k]) => ({employee_id: id, month: repMonth, cat: k,
+  const rows = CATS.filter(([k]) => document.getElementById(`p_${id}_${k}`)).map(([k]) => ({employee_id: id, month: repMonth, cat: k,
     plan: Math.round(+document.getElementById(`p_${id}_${k}`).value || 0),
     sales: Math.round(+document.getElementById(`s_${id}_${k}`).value || 0)}));
   const {error} = await sb.from("monthly_cat").upsert(rows, {onConflict: "employee_id,month,cat"});
@@ -684,9 +687,11 @@ function editEmp(id) {
   <label class="chk"><input type="checkbox" id="f_ao" ${e.allow_outside ? "checked" : ""}> Radiusdan tashqarida ham Keldim/Ketdim bosishga doimiy ruxsat</label>
   <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
   <label>Savdo plani valyutasi<select id="f_cu"><option value="USD" ${e.plan_currency !== "UZS" ? "selected" : ""}>Dollar ($)</option><option value="UZS" ${e.plan_currency === "UZS" ? "selected" : ""}>So'm</option></select></label>
-  ${CATS.map(([k, n]) => `<div style="margin-top:12px"><b>${n}</b></div>
+  <div class="mu" style="margin-top:12px;font-size:.92rem">Hodim ishlaydigan yo'nalishlar</div>
+  <div id="f_cats" class="chk" style="flex-wrap:wrap;gap:6px 14px;margin:6px 0 10px">${CATS.map(([k, n]) => `<label class="chk" style="margin:0"><input type="checkbox" data-k="${k}" ${empCats(e).some(x => x[0] === k) ? "checked" : ""} onchange="document.getElementById('cb_' + this.dataset.k).style.display = this.checked ? '' : 'none'"> ${n}</label>`).join("")}</div>
+  ${CATS.map(([k, n]) => `<div id="cb_${k}" style="${empCats(e).some(x => x[0] === k) ? "" : "display:none"}"><div style="margin-top:12px"><b>${n}</b></div>
   <label>Standart oylik plan<input type="number" id="cp_${k}" inputmode="numeric" value="${(e.cat_plans || {})[k] || 0}"></label>
-  <label>KPI bosqichlari (har qatorda: foiz=bonus so'mda)<textarea id="ck_${k}" rows="3" placeholder="70=100000&#10;81=200000&#10;91=300000">${esc(kpiToText((e.cat_kpi || {})[k]))}</textarea></label>`).join("")}
+  <label>KPI bosqichlari (har qatorda: foiz=bonus so'mda)<textarea id="ck_${k}" rows="3" placeholder="70=100000&#10;81=200000&#10;91=300000">${esc(kpiToText((e.cat_kpi || {})[k]))}</textarea></label></div>`).join("")}
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
   <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
   const q = s => m.el.querySelector(s);
@@ -716,7 +721,7 @@ function editEmp(id) {
     if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
       per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers,
-      base_salary: Math.round(+q("#f_b").value || 0), cat_plans, cat_kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked, plan_currency: q("#f_cu").value};
+      base_salary: Math.round(+q("#f_b").value || 0), cat_plans, cat_kpi, cats, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked, plan_currency: q("#f_cu").value};
     q("#s").disabled = true;
     if (id) {
       row.active = q("#f_x").checked;
