@@ -693,7 +693,7 @@ function editEmp(id) {
   <label>Standart oylik plan<input type="number" id="cp_${k}" inputmode="numeric" value="${(e.cat_plans || {})[k] || 0}"></label>
   <label>KPI bosqichlari (har qatorda: foiz=bonus so'mda)<textarea id="ck_${k}" rows="3" placeholder="70=100000&#10;81=200000&#10;91=300000">${esc(kpiToText((e.cat_kpi || {})[k]))}</textarea></label></div>`).join("")}
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
-  <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
+  <p class="err" id="fe"></p><div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div>`);
   const q = s => m.el.querySelector(s);
   q("#c").onclick = m.close;
   q("#s").onclick = async () => {
