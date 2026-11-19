@@ -359,8 +359,6 @@ function monthDays(m) {
   const [y, mo] = m.split("-").map(Number);
   const n = new Date(Date.UTC(y, mo, 0)).getUTCDate(), out = [];
   for (let d = 1; d <= n; d++) {
-    const cats = [...q("#f_cats").querySelectorAll("input:checked")].map(x => x.dataset.k);
-    if (!cats.length) { fe.textContent = "Kamida bitta yo'nalishni tanlang"; return; }
     const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
     out.push({ds: `${m}-${String(d).padStart(2, "0")}`, wd: wd === 0 ? 7 : wd});
   }
@@ -717,6 +715,8 @@ function editEmp(id) {
       }
       cat_kpi[k] = arr;
     }
+    const cats = [...q("#f_cats").querySelectorAll("input:checked")].map(x => x.dataset.k);
+    if (!cats.length) { fe.textContent = "Kamida bitta yo'nalishni tanlang"; return; }
     const wd = [...q("#f_wd").querySelectorAll("input:checked")].map(x => +x.dataset.d);
     if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
