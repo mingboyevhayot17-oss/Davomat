@@ -57,6 +57,10 @@ th:first-child,td:first-child{text-align:left}
 .sheet video,.sheet img{width:100%;border-radius:10px;background:#000;display:block;margin:6px 0}
 .sheet video.mir{transform:scaleX(-1)}
 .pend{border-left:3px solid var(--wn)}
+.bar{position:relative;height:12px;background:var(--bd);border-radius:6px;overflow:hidden;margin:6px 0}
+.bar i{display:block;height:100%;background:var(--wn);border-radius:6px}
+.bar i.ok{background:var(--pr)}
+.bar s{position:absolute;top:0;bottom:0;width:2px;background:var(--tx);opacity:.35}
 #toast{position:fixed;left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom));padding:12px 14px;border-radius:10px;background:var(--tx);color:var(--bg);display:none;z-index:30}
 #toast.show{display:block}
 #toast.err{background:var(--er);color:#fff}
@@ -370,20 +374,34 @@ function absence(e, m, att, off) {
   const daily = sched.length ? Number(e.base_salary || 0) / sched.length : 0;
   return {missed, daily, amt: Math.round(daily * missed.length)};
 }
-function calcPay(e, m, fines, adv, ab) {
-  const plan = m ? Number(m.plan) : Number(e.sales_plan || 0);
-  const sales = m ? Number(m.sales) : 0;
-  const pct = plan > 0 ? sales / plan * 100 : 0;
-  const tier = [...(e.kpi_tiers || [])].sort((a, b) => b.pct - a.pct).find(t => pct >= t.pct);
-  const bonus = tier ? Number(tier.bonus) : 0;
+const CATS = [["acc", "Aksessuar"], ["nb", "Notebook"], ["ph", "Yangi + b/u"]];
+function calcPay(e, rows, fines, adv, ab) {
+  const cats = CATS.map(([k, name]) => {
+    const r = (rows || []).find(x => x.cat === k);
+    const plan = r ? Number(r.plan) : Number((e.cat_plans || {})[k] || 0);
+    const sales = r ? Number(r.sales) : 0;
+    const pct = plan > 0 ? sales / plan * 100 : 0;
+    const tier = [...((e.cat_kpi || {})[k] || [])].sort((a, b) => b.pct - a.pct).find(t => pct >= t.pct);
+    return {k, name, plan, sales, pct, bonus: tier ? Number(tier.bonus) : 0};
+  });
+  const bonus = cats.reduce((x, c) => x + c.bonus, 0);
   const fixed = Number(e.base_salary || 0);
-  return {fixed, plan, sales, pct, bonus, fines, adv, missed: ab.missed.length, absAmt: ab.amt, daily: ab.daily,
+  return {cats, fixed, bonus, fines, adv, missed: ab.missed.length, absAmt: ab.amt, daily: ab.daily,
     net: fixed + bonus - fines - adv - ab.amt};
 }
+const catBars = (e, c) => c.cats.map(x => {
+  if (x.plan <= 0) return `<div style="margin:10px 0"><div class="row"><b>${x.name}</b><span class="mu">plan yo'q</span></div></div>`;
+  const tr = (e.cat_kpi || {})[x.k] || [];
+  const ticks = tr.filter(t => t.pct <= 100).map(t => `<s style="left:${t.pct}%"></s>`).join("");
+  const tiers = tr.slice().sort((a, b) => a.pct - b.pct).map(t => `${t.pct}% — ${money(t.bonus)}`).join("; ");
+  return `<div style="margin:10px 0"><div class="row"><b>${x.name}</b><b>${x.pct.toFixed(1)}%</b></div>
+  <div class="bar"><i class="${x.pct >= 100 ? "ok" : ""}" style="width:${Math.min(100, x.pct)}%"></i>${ticks}</div>
+  <div class="mu">${cur(e, x.sales)} / ${cur(e, x.plan)}${x.bonus ? `, bonus ${money(x.bonus)}` : ""}</div>
+  ${tiers ? `<div class="mu" style="font-size:.85rem">Bosqichlar: ${tiers}</div>` : ""}</div>`;
+}).join("");
 const payRows = c => `<div class="row"><span>Fiksa maosh</span><b>${money(c.fixed)}</b></div>
 <div class="mu">1 kunlik: ${money(Math.round(c.daily))}</div>
-<div class="row"><span>KPI bajarilishi</span><b>${c.plan > 0 ? c.pct.toFixed(1) + "%" : "plan yo'q"}</b></div>
-<div class="row"><span>KPI bonus</span><b>+ ${money(c.bonus)}</b></div>
+${c.cats.filter(x => x.plan > 0).map(x => `<div class="row"><span>${x.name} KPI (${x.pct.toFixed(1)}%)</span><b>+ ${money(x.bonus)}</b></div>`).join("") || '<div class="row"><span>KPI bonus</span><b>plan yo\'q</b></div>'}
 <div class="row"><span>Kelmagan kunlar (${c.missed} kun)</span><b>− ${money(c.absAmt)}</b></div>
 <div class="row"><span>Shtraf</span><b>− ${money(c.fines)}</b></div>
 <div class="row"><span>Avans</span><b>− ${money(c.adv)}</b></div>
@@ -397,7 +415,7 @@ async function loadPay() {
   try {
     const [a, m, v, em, o] = await Promise.all([
       sb.from("attendance").select("work_date,fine_amount,fine_waived").eq("employee_id", me.id).gte("work_date", from).lt("work_date", nx),
-      sb.from("monthly").select("*").eq("employee_id", me.id).eq("month", payMonth).maybeSingle(),
+      sb.from("monthly_cat").select("*").eq("employee_id", me.id).eq("month", payMonth),
       sb.from("advances").select("amount").eq("employee_id", me.id).gte("paid_on", from).lt("paid_on", nx),
       sb.from("employees").select("*").eq("id", me.id).single(),
       sb.from("days_off").select("*").eq("employee_id", me.id).gte("day", from).lt("day", nx).order("day")]);
@@ -408,13 +426,11 @@ async function loadPay() {
     const adv = v.data.reduce((x, r) => x + Number(r.amount), 0);
     const ab = absence(e, payMonth, a.data.map(r => r.work_date), o.data.map(r => r.day));
     const c = calcPay(e, m.data, fines, adv, ab);
-    const tiers = (e.kpi_tiers || []).slice().sort((x, y) => x.pct - y.pct).map(t => `${t.pct}% — ${money(t.bonus)}`).join("; ");
     const used = o.data.filter(r => !r.by_admin).length, today = tzNow().date;
-    box.innerHTML = `<div class="card"><h2>Oylik hisobim</h2>
-    <label>Oy<input type="month" id="pm" value="${payMonth}"></label>
-    <div class="row"><span>Savdo / plan</span><b>${cur(e, c.sales)} / ${cur(e, c.plan)}</b></div>${payRows(c)}
-    ${ab.missed.length ? `<div class="mu" style="margin-top:6px">Kelmagan kunlar: ${ab.missed.map(d => d.slice(8)).join(", ")}</div>` : ""}
-    ${tiers ? `<div class="mu" style="margin-top:6px">KPI bosqichlari: ${tiers}</div>` : ""}</div>
+    box.innerHTML = `<div class="card"><h2>Savdo rejam</h2>
+    <label>Oy<input type="month" id="pm" value="${payMonth}"></label>${catBars(e, c)}</div>
+    <div class="card"><h2>Oylik hisobim</h2>${payRows(c)}
+    ${ab.missed.length ? `<div class="mu" style="margin-top:6px">Kelmagan kunlar: ${ab.missed.map(d => d.slice(8)).join(", ")}</div>` : ""}</div>
     <div class="card"><h2>Dam kunlarim</h2><div class="mu">Siz belgilagan: ${used} / 2 (oyiga). Dam kuniga ham maosh to'lanadi.</div>
     ${o.data.map(r => `<div class="row"><span>${r.day}${r.by_admin ? ' <span class="tag">admin</span>' : ""}</span>${!r.by_admin && r.day >= today ? `<button class="lnk" onclick="cancelOff('${r.day}')">bekor qilish</button>` : ""}</div>`).join("") || '<div class="mu">Hali belgilanmagan</div>'}
     <label>Yangi dam kuni<input type="date" id="od" value="${today}" min="${today}"></label>
@@ -441,7 +457,7 @@ async function tabPay() {
   const [a, b, m, v, o] = await Promise.all([
     sb.from("employees").select("*").eq("active", true).eq("is_admin", false).order("full_name"),
     sb.from("attendance").select("employee_id,work_date,fine_amount,fine_waived").gte("work_date", from).lt("work_date", nx),
-    sb.from("monthly").select("*").eq("month", repMonth),
+    sb.from("monthly_cat").select("*").eq("month", repMonth),
     sb.from("advances").select("*").gte("paid_on", from).lt("paid_on", nx).order("paid_on"),
     sb.from("days_off").select("*").gte("day", from).lt("day", nx).order("day")]);
   const pp = document.getElementById("pp");
@@ -456,12 +472,9 @@ async function tabPay() {
     const adv = advs.reduce((x, r) => x + Number(r.amount), 0);
     const offs = o.data.filter(r => r.employee_id === e.id);
     const ab = absence(e, repMonth, att.map(r => r.work_date), offs.map(r => r.day));
-    const c = calcPay(e, m.data.find(r => r.employee_id === e.id), fines, adv, ab);
+    const c = calcPay(e, m.data.filter(r => r.employee_id === e.id), fines, adv, ab);
     total += c.net;
     return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><b class="${c.net < 0 ? "err" : ""}">${money(c.net)}</b></div>
-    <div class="two"><label>Plan (${curSign(e)})<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
-    <label>Savdo (${curSign(e)})<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
-    <button class="btn sm" onclick="savePay('${e.id}')">Plan va savdoni saqlash</button>
     ${payRows(c)}
     <details><summary class="mu">Kelmagan kunlar (${ab.missed.length})</summary>${ab.missed.map(d => `<div class="row"><span>${d}</span><button class="lnk" onclick="adminOff('${e.id}','${d}')">dam qilish</button></div>`).join("")}</details>
     <details><summary class="mu">Dam kunlari (${offs.length})</summary>${offs.map(r => `<div class="row"><span>${r.day}, ${r.by_admin ? "admin" : "hodim"}</span><button class="lnk" onclick="delOff('${r.id}')">o'chirish</button></div>`).join("")}</details>
@@ -470,12 +483,33 @@ async function tabPay() {
   }).join("");
   pp.innerHTML = cards + `<div class="card"><div class="row"><b>Jami to'lanadi</b><b>${money(total)}</b></div></div>`;
 }
-async function savePay(id) {
-  const plan = Math.round(+document.getElementById("pl_" + id).value || 0);
-  const sales = Math.round(+document.getElementById("sl_" + id).value || 0);
-  const {error} = await sb.from("monthly").upsert({employee_id: id, month: repMonth, plan, sales}, {onConflict: "employee_id,month"});
+async function tabPlan() {
+  pane().innerHTML = `<label>Oy<input type="month" id="plm" value="${repMonth}"></label><div id="pl"><p class="mu">Yuklanmoqda...</p></div>`;
+  document.getElementById("plm").onchange = e => { repMonth = e.target.value || repMonth; tabPlan(); };
+  const [a, m] = await Promise.all([
+    sb.from("employees").select("*").eq("active", true).eq("is_admin", false).order("full_name"),
+    sb.from("monthly_cat").select("*").eq("month", repMonth)]);
+  const pl = document.getElementById("pl");
+  const er = a.error || m.error;
+  if (er) return pl.innerHTML = `<p class="err">${esc(er.message)}</p>`;
+  if (!a.data.length) return pl.innerHTML = '<p class="mu">Hodimlar yo\'q.</p>';
+  pl.innerHTML = a.data.map(e => {
+    const c = calcPay(e, m.data.filter(r => r.employee_id === e.id), 0, 0, {missed: [], amt: 0, daily: 0});
+    return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><span class="tag">${curSign(e)}</span></div>
+    ${c.cats.map(x => `<div class="mu" style="margin-top:10px"><b>${x.name}</b></div>
+    <div class="two"><label>Plan<input type="number" inputmode="numeric" id="p_${e.id}_${x.k}" value="${x.plan}"></label>
+    <label>Savdo<input type="number" inputmode="numeric" id="s_${e.id}_${x.k}" value="${x.sales}"></label></div>`).join("")}
+    <button class="btn sm pri" onclick="savePlan('${e.id}')">Saqlash</button>
+    <div style="margin-top:6px">${catBars(e, c)}</div></div>`;
+  }).join("");
+}
+async function savePlan(id) {
+  const rows = CATS.map(([k]) => ({employee_id: id, month: repMonth, cat: k,
+    plan: Math.round(+document.getElementById(`p_${id}_${k}`).value || 0),
+    sales: Math.round(+document.getElementById(`s_${id}_${k}`).value || 0)}));
+  const {error} = await sb.from("monthly_cat").upsert(rows, {onConflict: "employee_id,month,cat"});
   if (error) return toast(error.message, 1);
-  toast("Saqlandi"); tabPay();
+  toast("Saqlandi"); tabPlan();
 }
 async function adminOff(id, day) {
   const {error} = await sb.from("days_off").insert({employee_id: id, day, by_admin: true});
@@ -539,9 +573,9 @@ const pane = () => document.getElementById("pane");
 const setTab = k => { tab = k; adminView(); };
 async function adminView() {
   if (!repMonth) repMonth = tzNow().date.slice(0, 7);
-  app.innerHTML = `${topbar()}<nav class="tabs">${[["today","Bugun"],["report","Hisobot"],["pay","Maosh"],["staff","Hodimlar"],["set","Ofis"]]
+  app.innerHTML = `${topbar()}<nav class="tabs">${[["today","Bugun"],["report","Hisobot"],["plan","Plan"],["pay","Maosh"],["staff","Hodimlar"],["set","Ofis"]]
     .map(([k, n]) => `<button class="${tab === k ? "on" : ""}" onclick="setTab('${k}')">${n}</button>`).join("")}</nav><main id="pane"></main>`;
-  await ({today: tabToday, report: tabReport, pay: tabPay, staff: tabStaff, set: tabSet})[tab]();
+  await ({today: tabToday, report: tabReport, plan: tabPlan, pay: tabPay, staff: tabStaff, set: tabSet})[tab]();
 }
 function recAdmin(r) {
   RC[r.id] = r;
@@ -650,8 +684,9 @@ function editEmp(id) {
   <label class="chk"><input type="checkbox" id="f_ao" ${e.allow_outside ? "checked" : ""}> Radiusdan tashqarida ham Keldim/Ketdim bosishga doimiy ruxsat</label>
   <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
   <label>Savdo plani valyutasi<select id="f_cu"><option value="USD" ${e.plan_currency !== "UZS" ? "selected" : ""}>Dollar ($)</option><option value="UZS" ${e.plan_currency === "UZS" ? "selected" : ""}>So'm</option></select></label>
-  <label>Oylik savdo plani (tanlangan valyutada)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
-  <label>KPI bonus (har qatorda: foiz=bonus summasi)<textarea id="f_k" rows="4" placeholder="80=200000&#10;100=500000&#10;120=1000000">${esc(kpiToText(e.kpi_tiers))}</textarea></label>
+  ${CATS.map(([k, n]) => `<div style="margin-top:12px"><b>${n}</b></div>
+  <label>Standart oylik plan<input type="number" id="cp_${k}" inputmode="numeric" value="${(e.cat_plans || {})[k] || 0}"></label>
+  <label>KPI bosqichlari (har qatorda: foiz=bonus so'mda)<textarea id="ck_${k}" rows="3" placeholder="70=100000&#10;81=200000&#10;91=300000">${esc(kpiToText((e.cat_kpi || {})[k]))}</textarea></label>`).join("")}
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
   <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
   const q = s => m.el.querySelector(s);
@@ -666,17 +701,22 @@ function editEmp(id) {
       if (!k) { fe.textContent = `Bosqich noto'g'ri yozilgan: ${ln}`; return; }
       tiers.push({from: +k[1], to: +k[2], amount: +k[3]});
     }
-    const kpi = [];
-    for (const ln of q("#f_k").value.split("\n").map(x => x.trim()).filter(Boolean)) {
-      const k = ln.match(/^(\d+(?:[.,]\d+)?)\s*%?\s*=\s*(\d+)$/);
-      if (!k) { fe.textContent = `KPI qatori noto'g'ri yozilgan: ${ln}`; return; }
-      kpi.push({pct: parseFloat(k[1].replace(",", ".")), bonus: +k[2]});
+    const cat_plans = {}, cat_kpi = {};
+    for (const [k, n] of CATS) {
+      cat_plans[k] = Math.round(+q("#cp_" + k).value || 0);
+      const arr = [];
+      for (const ln of q("#ck_" + k).value.split("\n").map(x => x.trim()).filter(Boolean)) {
+        const kk = ln.match(/^(\d+(?:[.,]\d+)?)\s*%?\s*=\s*(\d+)$/);
+        if (!kk) { fe.textContent = `${n}: KPI qatori noto'g'ri yozilgan: ${ln}`; return; }
+        arr.push({pct: parseFloat(kk[1].replace(",", ".")), bonus: +kk[2]});
+      }
+      cat_kpi[k] = arr;
     }
     const wd = [...q("#f_wd").querySelectorAll("input:checked")].map(x => +x.dataset.d);
     if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
       per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers,
-      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked, plan_currency: q("#f_cu").value};
+      base_salary: Math.round(+q("#f_b").value || 0), cat_plans, cat_kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked, plan_currency: q("#f_cu").value};
     q("#s").disabled = true;
     if (id) {
       row.active = q("#f_x").checked;
