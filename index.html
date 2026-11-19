@@ -309,7 +309,14 @@ async function act(kind) {
     const pos = await getPos();
     const la = pos.coords.latitude, lo = pos.coords.longitude;
     const d = Math.round(dist(la, lo, settings.office_lat, settings.office_lng));
-    if (d > settings.radius_m) { note = [`Siz ofisdan ${d} m uzoqdasiz. Ruxsat etilgan masofa: ${settings.radius_m} m.`, true]; return; }
+    if (d > settings.radius_m) {
+      let em = me;
+      try { const r0 = await sb.from("employees").select("*").eq("id", me.id).single(); if (!r0.error && r0.data) em = r0.data; } catch (e) {}
+      if (!(em.allow_outside || (em.outside_until && em.outside_until >= tzNow().date))) {
+        note = [`Siz ofisdan ${d} m uzoqdasiz. Ruxsat etilgan masofa: ${settings.radius_m} m. Admin ruxsat bersa, bosa olasiz.`, true];
+        return;
+      }
+    }
     let reason = null;
     if (kind === "in") {
       const late = tzNow().min - toMin(me.work_start);
@@ -539,6 +546,7 @@ function recAdmin(r) {
   const late = r.late_minutes > 0;
   return `<div class="row"><span>Keldi</span><b>${fmtT(r.check_in)}</b></div>
   <div class="row"><span>Ketdi</span><b>${fmtT(r.check_out)}</b></div>
+  ${r.in_outside ? `<div class="mu">Keldi: radiusdan tashqarida (${r.in_dist} m)</div>` : ""}${r.out_outside ? `<div class="mu">Ketdi: radiusdan tashqarida (${r.out_dist} m)</div>` : ""}
   ${r.is_offline ? `<div class="mu">Oflayn yozilgan, serverga ${new Date(r.synced_at).toLocaleString("en-GB", {timeZone: "Asia/Tashkent"})} da yuborilgan</div>` : ""}
   ${late ? `<div class="row warn"><span>Kechikish</span><b>${r.late_minutes} daqiqa</b></div>
   <div class="row"><span>Shtraf</span><span><b class="${r.fine_waived ? "strike" : ""}">${money(r.fine_amount)}</b> ${r.fine_waived ? '<span class="tag">ozod</span>' : ""}</span></div>
@@ -564,6 +572,16 @@ async function photos(id) {
   <button class="btn" id="cl">Yopish</button>`;
   m.el.querySelector("#cl").onclick = m.close;
 }
+function permitHtml(e, today) {
+  if (e.allow_outside) return '<div class="mu" style="margin-top:6px">Radiusdan tashqarida doimiy ruxsat bor (Hodimlar bo\'limida o\'zgartiriladi)</div>';
+  const on = e.outside_until && e.outside_until >= today;
+  return `<button class="btn sm ${on ? "" : "pri"}" style="margin-top:6px" onclick="togglePermit('${e.id}', ${!!on})">${on ? "Bugungi ruxsatni bekor qilish" : "Bugun radiusdan tashqarida ruxsat berish"}</button>`;
+}
+async function togglePermit(id, on) {
+  const {error} = await sb.from("employees").update({outside_until: on ? null : tzNow().date}).eq("id", id);
+  if (error) return toast(error.message, 1);
+  toast(on ? "Ruxsat bekor qilindi" : "Bugun uchun ruxsat berildi"); tabToday();
+}
 async function tabToday() {
   pane().innerHTML = '<p class="mu">Yuklanmoqda...</p>';
   const t = tzNow();
@@ -574,7 +592,7 @@ async function tabToday() {
   const by = Object.fromEntries(b.data.map(r => [r.employee_id, r]));
   pane().innerHTML = `<h2>Bugun, ${t.date}</h2>` + (a.data.length ? a.data.map(e => {
     const r = by[e.id];
-    return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><span class="mu">${hm(e.work_start)}–${hm(e.work_end)}</span></div>${r ? recAdmin(r) : '<div class="mu">Hali kelmagan</div>'}</div>`;
+    return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><span class="mu">${hm(e.work_start)}–${hm(e.work_end)}</span></div>${r ? recAdmin(r) : '<div class="mu">Hali kelmagan</div>'}${permitHtml(e, t.date)}</div>`;
   }).join("") : `<p class="mu">Hodimlar yo'q. "Hodimlar" bo'limidan qo'shing.</p>`);
 }
 async function tabReport() {
@@ -614,7 +632,7 @@ async function tabStaff() {
     <div class="mu">${hm(e.work_start)}–${hm(e.work_end)}, ${fineLabel(e)}</div></div>`).join("");
 }
 function editEmp(id) {
-  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], base_salary: 0, sales_plan: 0, kpi_tiers: [], work_days: [1, 2, 3, 4, 5, 6], start_date: null, active: true};
+  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], base_salary: 0, sales_plan: 0, kpi_tiers: [], work_days: [1, 2, 3, 4, 5, 6], start_date: null, allow_outside: false, active: true};
   const opt = (v, n) => `<option value="${v}" ${e.fine_mode === v ? "selected" : ""}>${n}</option>`;
   const m = modal(`<h3>${id ? "Hodimni tahrirlash" : "Yangi hodim"}</h3>
   <label>Ism-familiya<input id="f_n" value="${esc(e.full_name)}"></label>
@@ -627,6 +645,7 @@ function editEmp(id) {
   <label>Bosqichlar (har qatorda: dan-gacha=summa)<textarea id="f_t" rows="4" placeholder="1-15=10000&#10;16-30=30000&#10;31-999=50000">${esc(tiersToText(e.tiers))}</textarea></label>
   ${wdBox(e.work_days || [1, 2, 3, 4, 5, 6])}
   <label>Ishga kirgan sana (ixtiyoriy)<input type="date" id="f_sd" value="${e.start_date || ""}"></label>
+  <label class="chk"><input type="checkbox" id="f_ao" ${e.allow_outside ? "checked" : ""}> Radiusdan tashqarida ham Keldim/Ketdim bosishga doimiy ruxsat</label>
   <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
   <label>Oylik savdo plani ($)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
   <label>KPI bonus (har qatorda: foiz=bonus summasi)<textarea id="f_k" rows="4" placeholder="80=200000&#10;100=500000&#10;120=1000000">${esc(kpiToText(e.kpi_tiers))}</textarea></label>
@@ -654,7 +673,7 @@ function editEmp(id) {
     if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
       per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers,
-      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null};
+      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked};
     q("#s").disabled = true;
     if (id) {
       row.active = q("#f_x").checked;
