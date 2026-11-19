@@ -77,6 +77,8 @@ let repMonth = null;
 /* ---------- helpers ---------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const usd = n => "$" + Number(n || 0).toLocaleString("ru-RU");
+const cur = (e, n) => (e && e.plan_currency === "UZS") ? money(n) : usd(n);
+const curSign = e => (e && e.plan_currency === "UZS") ? "so'm" : "$";
 const money = n => Number(n || 0).toLocaleString("ru-RU") + " so'm";
 const fmtT = iso => iso ? new Date(iso).toLocaleTimeString("en-GB", {timeZone:"Asia/Tashkent", hour:"2-digit", minute:"2-digit"}) : "—";
 const hm = s => String(s).slice(0, 5);
@@ -410,7 +412,7 @@ async function loadPay() {
     const used = o.data.filter(r => !r.by_admin).length, today = tzNow().date;
     box.innerHTML = `<div class="card"><h2>Oylik hisobim</h2>
     <label>Oy<input type="month" id="pm" value="${payMonth}"></label>
-    <div class="row"><span>Savdo / plan</span><b>${usd(c.sales)} / ${usd(c.plan)}</b></div>${payRows(c)}
+    <div class="row"><span>Savdo / plan</span><b>${cur(e, c.sales)} / ${cur(e, c.plan)}</b></div>${payRows(c)}
     ${ab.missed.length ? `<div class="mu" style="margin-top:6px">Kelmagan kunlar: ${ab.missed.map(d => d.slice(8)).join(", ")}</div>` : ""}
     ${tiers ? `<div class="mu" style="margin-top:6px">KPI bosqichlari: ${tiers}</div>` : ""}</div>
     <div class="card"><h2>Dam kunlarim</h2><div class="mu">Siz belgilagan: ${used} / 2 (oyiga). Dam kuniga ham maosh to'lanadi.</div>
@@ -457,8 +459,8 @@ async function tabPay() {
     const c = calcPay(e, m.data.find(r => r.employee_id === e.id), fines, adv, ab);
     total += c.net;
     return `<div class="card"><div class="row"><b>${esc(e.full_name)}</b><b class="${c.net < 0 ? "err" : ""}">${money(c.net)}</b></div>
-    <div class="two"><label>Plan ($)<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
-    <label>Savdo ($)<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
+    <div class="two"><label>Plan (${curSign(e)})<input type="number" inputmode="numeric" id="pl_${e.id}" value="${c.plan}"></label>
+    <label>Savdo (${curSign(e)})<input type="number" inputmode="numeric" id="sl_${e.id}" value="${c.sales}"></label></div>
     <button class="btn sm" onclick="savePay('${e.id}')">Plan va savdoni saqlash</button>
     ${payRows(c)}
     <details><summary class="mu">Kelmagan kunlar (${ab.missed.length})</summary>${ab.missed.map(d => `<div class="row"><span>${d}</span><button class="lnk" onclick="adminOff('${e.id}','${d}')">dam qilish</button></div>`).join("")}</details>
@@ -632,7 +634,7 @@ async function tabStaff() {
     <div class="mu">${hm(e.work_start)}–${hm(e.work_end)}, ${fineLabel(e)}</div></div>`).join("");
 }
 function editEmp(id) {
-  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], base_salary: 0, sales_plan: 0, kpi_tiers: [], work_days: [1, 2, 3, 4, 5, 6], start_date: null, allow_outside: false, active: true};
+  const e = id ? EMP[id] : {full_name: "", work_start: "09:00", work_end: "18:00", fine_mode: "per_minute", per_minute_amount: 0, grace_minutes: 0, tiers: [], base_salary: 0, sales_plan: 0, kpi_tiers: [], work_days: [1, 2, 3, 4, 5, 6], start_date: null, allow_outside: false, plan_currency: "USD", active: true};
   const opt = (v, n) => `<option value="${v}" ${e.fine_mode === v ? "selected" : ""}>${n}</option>`;
   const m = modal(`<h3>${id ? "Hodimni tahrirlash" : "Yangi hodim"}</h3>
   <label>Ism-familiya<input id="f_n" value="${esc(e.full_name)}"></label>
@@ -647,7 +649,8 @@ function editEmp(id) {
   <label>Ishga kirgan sana (ixtiyoriy)<input type="date" id="f_sd" value="${e.start_date || ""}"></label>
   <label class="chk"><input type="checkbox" id="f_ao" ${e.allow_outside ? "checked" : ""}> Radiusdan tashqarida ham Keldim/Ketdim bosishga doimiy ruxsat</label>
   <label>Fiksa oylik maosh (so'm)<input type="number" id="f_b" inputmode="numeric" value="${e.base_salary || 0}"></label>
-  <label>Oylik savdo plani ($)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
+  <label>Savdo plani valyutasi<select id="f_cu"><option value="USD" ${e.plan_currency !== "UZS" ? "selected" : ""}>Dollar ($)</option><option value="UZS" ${e.plan_currency === "UZS" ? "selected" : ""}>So'm</option></select></label>
+  <label>Oylik savdo plani (tanlangan valyutada)<input type="number" id="f_p2" inputmode="numeric" value="${e.sales_plan || 0}"></label>
   <label>KPI bonus (har qatorda: foiz=bonus summasi)<textarea id="f_k" rows="4" placeholder="80=200000&#10;100=500000&#10;120=1000000">${esc(kpiToText(e.kpi_tiers))}</textarea></label>
   ${id ? `<label class="chk"><input type="checkbox" id="f_x" ${e.active ? "checked" : ""}> Faol hodim</label>` : ""}
   <div class="two"><button class="btn" id="c">Bekor qilish</button><button class="btn pri" id="s">Saqlash</button></div><p class="err" id="fe"></p>`);
@@ -673,7 +676,7 @@ function editEmp(id) {
     if (!wd.length) { fe.textContent = "Kamida bitta ish kunini belgilang"; return; }
     const row = {full_name: name, work_start: q("#f_s").value, work_end: q("#f_e").value, fine_mode: q("#f_m").value,
       per_minute_amount: +q("#f_a").value || 0, grace_minutes: +q("#f_g").value || 0, tiers,
-      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked};
+      base_salary: Math.round(+q("#f_b").value || 0), sales_plan: Math.round(+q("#f_p2").value || 0), kpi_tiers: kpi, work_days: wd, start_date: q("#f_sd").value || null, allow_outside: q("#f_ao").checked, plan_currency: q("#f_cu").value};
     q("#s").disabled = true;
     if (id) {
       row.active = q("#f_x").checked;
