@@ -660,11 +660,17 @@ async function tabReport() {
     if (!r.fine_waived) x.fine += r.fine_amount;
   });
   const total = Object.values(g).reduce((s, x) => s + x.fine, 0);
+  const byEmp = {};
+  data.forEach(r => { const n = r.employees?.full_name || "?"; (byEmp[n] ??= []).push(r); });
+  const days = Object.keys(byEmp).sort().map(n => {
+    const rs = byEmp[n].slice().sort((a, b) => a.work_date < b.work_date ? -1 : 1);
+    return `<h2 style="margin-top:18px">${esc(n)}</h2>` + rs.map(r => `<details class="card"><summary><div class="row"><b>${r.work_date.slice(8)}.${r.work_date.slice(5, 7)}</b><span>Keldi ${fmtT(r.check_in)}, Ketdi ${fmtT(r.check_out)}${r.late_minutes > 0 ? ` <span style="color:var(--wn)">(${r.late_minutes} daq. kech)</span>` : ""}</span></div></summary>${recAdmin(r)}</details>`).join("");
+  }).join("");
   rp.innerHTML = `<div class="card scroll"><table><tr><th>Hodim</th><th>Kun</th><th>Kech.</th><th>Daq.</th><th>Shtraf</th></tr>
   ${Object.entries(g).map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.days}</td><td>${x.late}</td><td>${x.min}</td><td>${money(x.fine)}</td></tr>`).join("")}
   <tr><td><b>Jami</b></td><td></td><td></td><td></td><td><b>${money(total)}</b></td></tr></table></div>
   <h2>Kunlar bo'yicha</h2>
-  ${data.map(r => `<details class="card"><summary><div class="row"><b>${esc(r.employees?.full_name || "?")}</b><span class="mu">${r.work_date}${r.late_minutes > 0 ? `, <span style="color:var(--wn)">${r.late_minutes} daq. kech</span>` : ""}</span></div></summary>${recAdmin(r)}</details>`).join("")}`;
+  ${days}`;
 }
 const fineLabel = e => (e.fine_mode === "none" ? "shtrafsiz" : e.fine_mode === "per_minute" ? `${money(e.per_minute_amount)} / daqiqa` : "bosqichli shtraf")
   + (e.grace_minutes > 0 ? `, ${e.grace_minutes} daq. imtiyoz` : "");
